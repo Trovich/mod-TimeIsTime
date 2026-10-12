@@ -58,3 +58,16 @@ TimeIsTime.SpeedRate = 1.0
 #####################################################################################################
 TimeIsTime.TimeStart = 0
 TimeIsTime.HourOffset = 0.0
+
+# Outland.FixedHour
+#####################################################################################################
+# Outland has no day and night: while a player is in Outland his client clock stands at this hour
+# (sky, light, sun and shadows stop with it; the minimap clock in "realm time" stands as well).
+# Eversong Woods, Ghostlands, Silvermoon, Quel'Danas, Azuremyst, Bloodmyst and the Exodar are stored
+# on the Outland map but keep the ordinary day.
+# Settings: 0.0 - 23.99 = hour of the day (12.0 = noon, 18.5 = 18:30)
+#           -1          = off, Outland follows the world clock
+# Default:  12.0
+# Example:  TimeIsTime.Outland.FixedHour = 12.0
+#####################################################################################################
+TimeIsTime.Outland.FixedHour = 12.0

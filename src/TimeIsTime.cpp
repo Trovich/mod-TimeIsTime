@@ -20,7 +20,8 @@ using namespace Acore::ChatCommands;
 static bool   stimeistime_enable,
               stimeistime_announce;
 static float  stimeistime_speed_rate,
-              stimeistime_hour_offset;
+              stimeistime_hour_offset,
+              stimeistime_outland_hour; // TimeIsTime.Outland.FixedHour, below 0 = Outland follows the world clock
 static uint32 stimeistime_time_start;
 static int64  stimeistime_gm_offset = 0; // game-time seconds added by .worldtime, not persisted
 
@@ -33,10 +34,39 @@ static time_t TimeIsTimeNow() {
     return base + stimeistime_gm_offset;
 }
 
+// what the player's client was told last: the world clock or Outland's standing one
+struct TimeIsTimePlayerData : public DataMap::Base {
+    bool outlandTime = false;
+};
+
+// Outland has no day and night: there the client clock stands at TimeIsTime.Outland.FixedHour.
+// Map 530 also holds Eversong Woods, Ghostlands, Silvermoon, the Isle of Quel'Danas, Azuremyst, Bloodmyst and
+// the Exodar - Azeroth, with an ordinary day. All of them lie far south of Outland (y below -5000).
+static bool TimeIsTimeInOutland(Player const* player) {
+    return stimeistime_outland_hour >= 0.0f && player->GetMapId() == 530 && player->GetPositionY() > -2500.0f;
+}
+
+// today's date at the fixed hour
+static time_t TimeIsTimeOutland() {
+    std::tm lt = Acore::Time::TimeBreakdown(TimeIsTimeNow());
+    uint32 minutes = uint32(stimeistime_outland_hour * 60.0f) % (24 * 60);
+    lt.tm_hour = minutes / 60;
+    lt.tm_min = minutes % 60;
+    lt.tm_sec = 0;
+    return mktime(&lt);
+}
+
 static void TimeIsTimeSend(WorldSession* session) {
+    Player* player = session->GetPlayer();
+    bool outland = player && TimeIsTimeInOutland(player);
+    if (player)
+        player->CustomData.GetDefault<TimeIsTimePlayerData>("TimeIsTime")->outlandTime = outland;
+
     WorldPacket data(SMSG_LOGIN_SETTIMESPEED, 4 + 4 + 4);
-    data.AppendPackedTime(TimeIsTimeNow());
-    data << float(0.01666667f) * stimeistime_speed_rate;
+    data.AppendPackedTime(outland ? TimeIsTimeOutland() : TimeIsTimeNow());
+    // game minutes per real second. Outland: not 0 (the client is not known to take a stopped clock),
+    // one game minute in more than a day
+    data << (outland ? 0.00001f : float(0.01666667f) * stimeistime_speed_rate);
     data << uint32(0);
     session->SendPacket(&data);
 }
@@ -52,6 +82,7 @@ public:
         stimeistime_speed_rate = sConfigMgr->GetOption<float>("TimeIsTime.SpeedRate", 1.0);
         stimeistime_hour_offset = sConfigMgr->GetOption<float>("TimeIsTime.HourOffset", 0.0);
         stimeistime_time_start = sConfigMgr->GetOption<int>("TimeIsTime.TimeStart", 0);
+        stimeistime_outland_hour = sConfigMgr->GetOption<float>("TimeIsTime.Outland.FixedHour", 12.0);
     }
 };
 
@@ -70,6 +101,16 @@ public:
             return;
 
         TimeIsTimeSend(player->GetSession());
+    }
+
+    // Outland can be entered and left without a change of map (the Shattrath portals to Silvermoon and the
+    // Exodar, a GM teleport), and then no initial packets are sent
+    void OnPlayerUpdateZone(Player* player, uint32 /*newZone*/, uint32 /*newArea*/) override {
+        if (!stimeistime_enable)
+            return;
+
+        if (TimeIsTimeInOutland(player) != player->CustomData.GetDefault<TimeIsTimePlayerData>("TimeIsTime")->outlandTime)
+            TimeIsTimeSend(player->GetSession());
     }
 };
 
