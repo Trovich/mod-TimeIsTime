@@ -12,6 +12,9 @@
 #include "Chat.h"
 #include "GameTime.h"
 #include "Timer.h"
+#include "Tokenize.h"
+#include "StringConvert.h"
+#include <unordered_set>
 #include "WorldSession.h"
 #include "WorldSessionMgr.h"
 
@@ -21,7 +24,9 @@ static bool   stimeistime_enable,
               stimeistime_announce;
 static float  stimeistime_speed_rate,
               stimeistime_hour_offset,
-              stimeistime_outland_hour; // TimeIsTime.Outland.FixedHour, below 0 = Outland follows the world clock
+              stimeistime_outland_hour, // TimeIsTime.Outland.FixedHour, below 0 = Outland follows the world clock
+              stimeistime_maps_hour;    // TimeIsTime.FixedHour.Hour for the maps of TimeIsTime.FixedHour.MapIds
+static std::unordered_set<uint32> stimeistime_fixed_maps;
 static uint32 stimeistime_time_start;
 static int64  stimeistime_gm_offset = 0; // game-time seconds added by .worldtime, not persisted
 
@@ -34,9 +39,15 @@ static time_t TimeIsTimeNow() {
     return base + stimeistime_gm_offset;
 }
 
-// what the player's client was told last: the world clock or Outland's standing one
+// The world clock the clients see, for other modules (mod-capital-weather-sync: morning fog by game hour).
+// Declared there as `time_t TimeIsTimeWorldNow();` - both modules are linked into the same worldserver.
+time_t TimeIsTimeWorldNow() {
+    return stimeistime_enable ? TimeIsTimeNow() : GameTime::GetGameTime().count();
+}
+
+// what the player's client was told last: the world clock (below 0) or the hour it stands at
 struct TimeIsTimePlayerData : public DataMap::Base {
-    bool outlandTime = false;
+    float fixedHour = -1.0f;
 };
 
 // Outland has no day and night: there the client clock stands at TimeIsTime.Outland.FixedHour.
@@ -46,10 +57,22 @@ static bool TimeIsTimeInOutland(Player const* player) {
     return stimeistime_outland_hour >= 0.0f && player->GetMapId() == 530 && player->GetPositionY() > -2500.0f;
 }
 
+// the hour the client clock stands at here, below 0 = the world clock. Besides Outland: whole maps with an endless
+// day or night, such as the test range on Azshara Crater (map 37, docs/test-range.md)
+static float TimeIsTimeFixedHour(Player const* player) {
+    if (TimeIsTimeInOutland(player))
+        return stimeistime_outland_hour;
+
+    if (stimeistime_maps_hour >= 0.0f && stimeistime_fixed_maps.count(player->GetMapId()))
+        return stimeistime_maps_hour;
+
+    return -1.0f;
+}
+
 // today's date at the fixed hour
-static time_t TimeIsTimeOutland() {
+static time_t TimeIsTimeFixed(float hour) {
     std::tm lt = Acore::Time::TimeBreakdown(TimeIsTimeNow());
-    uint32 minutes = uint32(stimeistime_outland_hour * 60.0f) % (24 * 60);
+    uint32 minutes = uint32(hour * 60.0f) % (24 * 60);
     lt.tm_hour = minutes / 60;
     lt.tm_min = minutes % 60;
     lt.tm_sec = 0;
@@ -58,15 +81,16 @@ static time_t TimeIsTimeOutland() {
 
 static void TimeIsTimeSend(WorldSession* session) {
     Player* player = session->GetPlayer();
-    bool outland = player && TimeIsTimeInOutland(player);
+    float hour = player ? TimeIsTimeFixedHour(player) : -1.0f;
+    bool fixed = hour >= 0.0f;
     if (player)
-        player->CustomData.GetDefault<TimeIsTimePlayerData>("TimeIsTime")->outlandTime = outland;
+        player->CustomData.GetDefault<TimeIsTimePlayerData>("TimeIsTime")->fixedHour = hour;
 
     WorldPacket data(SMSG_LOGIN_SETTIMESPEED, 4 + 4 + 4);
-    data.AppendPackedTime(outland ? TimeIsTimeOutland() : TimeIsTimeNow());
-    // game minutes per real second. Outland: not 0 (the client is not known to take a stopped clock),
+    data.AppendPackedTime(fixed ? TimeIsTimeFixed(hour) : TimeIsTimeNow());
+    // game minutes per real second. A standing clock: not 0 (the client is not known to take a stopped clock),
     // one game minute in more than a day
-    data << (outland ? 0.00001f : float(0.01666667f) * stimeistime_speed_rate);
+    data << (fixed ? 0.00001f : float(0.01666667f) * stimeistime_speed_rate);
     data << uint32(0);
     session->SendPacket(&data);
 }
@@ -83,6 +107,12 @@ public:
         stimeistime_hour_offset = sConfigMgr->GetOption<float>("TimeIsTime.HourOffset", 0.0);
         stimeistime_time_start = sConfigMgr->GetOption<int>("TimeIsTime.TimeStart", 0);
         stimeistime_outland_hour = sConfigMgr->GetOption<float>("TimeIsTime.Outland.FixedHour", 12.0);
+        stimeistime_maps_hour = sConfigMgr->GetOption<float>("TimeIsTime.FixedHour.Hour", 12.0);
+        stimeistime_fixed_maps.clear();
+        std::string const maps = sConfigMgr->GetOption<std::string>("TimeIsTime.FixedHour.MapIds", "");
+        for (std::string_view id : Acore::Tokenize(maps, ',', false))
+            if (Optional<uint32> map = Acore::StringTo<uint32>(id))
+                stimeistime_fixed_maps.insert(*map);
     }
 };
 
@@ -103,13 +133,13 @@ public:
         TimeIsTimeSend(player->GetSession());
     }
 
-    // Outland can be entered and left without a change of map (the Shattrath portals to Silvermoon and the
+    // Outland and the fixed-hour maps can be entered and left without a change of map (the Shattrath portals to Silvermoon and the
     // Exodar, a GM teleport), and then no initial packets are sent
     void OnPlayerUpdateZone(Player* player, uint32 /*newZone*/, uint32 /*newArea*/) override {
         if (!stimeistime_enable)
             return;
 
-        if (TimeIsTimeInOutland(player) != player->CustomData.GetDefault<TimeIsTimePlayerData>("TimeIsTime")->outlandTime)
+        if (TimeIsTimeFixedHour(player) != player->CustomData.GetDefault<TimeIsTimePlayerData>("TimeIsTime")->fixedHour)
             TimeIsTimeSend(player->GetSession());
     }
 };

@@ -71,3 +71,14 @@ TimeIsTime.HourOffset = 0.0
 # Example:  TimeIsTime.Outland.FixedHour = 12.0
 #####################################################################################################
 TimeIsTime.Outland.FixedHour = 12.0
+
+# FixedHour.MapIds / FixedHour.Hour
+#####################################################################################################
+# Whole maps where the client clock stands at one hour, as in Outland: an endless day (or night).
+# Map 37 is the test range on Azshara Crater (docs/test-range.md).
+# Settings: MapIds = map ids separated by commas, empty = none
+#           Hour   = 0.0 - 23.99 (12.0 = noon), -1 = off
+# Default:  MapIds = ""   Hour = 12.0
+#####################################################################################################
+TimeIsTime.FixedHour.MapIds = ""
+TimeIsTime.FixedHour.Hour = 12.0
